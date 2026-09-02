@@ -25,21 +25,26 @@ CAPITAL = 300_000  # 元金（円）
 
 
 def _secret(key: str, default: str = "") -> str:
-    """st.secrets → 環境変数 → .env の順に探す"""
+    """st.secrets → 環境変数 → .env の順に探す。前後の空白と引用符は除去する"""
+    val = None
     try:
         if key in st.secrets:
-            return st.secrets[key]
+            val = st.secrets[key]
     except Exception:
         pass
-    v = os.getenv(key)
-    if v:
-        return v
-    try:
-        from dotenv import load_dotenv
-        load_dotenv(os.path.join(os.path.dirname(__file__), ".env"), override=False)
-        return os.getenv(key, default)
-    except Exception:
+    if val is None:
+        val = os.getenv(key)
+    if val is None:
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(os.path.join(os.path.dirname(__file__), ".env"), override=False)
+            val = os.getenv(key)
+        except Exception:
+            val = None
+    if val is None:
         return default
+    # 貼り付け時に紛れ込みやすい空白・改行・引用符（全角やスマートクォート含む）を落とす
+    return str(val).strip().strip('"\'“”＂')
 
 
 # ───────────────────────── 認証 ─────────────────────────
@@ -66,6 +71,23 @@ if not check_password():
 
 # 接続情報が無いまま進むと supabase 側の例外になって原因が分かりにくいので、
 # ここで設定漏れを明示する
+
+# 接続情報に非ASCII文字（全角スペース・スマートクォート等）が混ざっていると
+# HTTPヘッダー生成時に UnicodeEncodeError になるため、先に検出して位置を示す
+for _k in ("SUPABASE_URL", "SUPABASE_SERVICE_KEY"):
+    _v = _secret(_k)
+    if _v and not _v.isascii():
+        bad = [(i, ch, hex(ord(ch))) for i, ch in enumerate(_v) if not ch.isascii()]
+        st.title("⚙️ 設定値に不正な文字があります")
+        st.error(f"`{_k}` に半角英数字以外の文字が {len(bad)}個 含まれています。")
+        st.write("該当箇所（先頭5件）:")
+        st.code("\n".join(f"{i}文字目: {repr(ch)} ({code})" for i, ch, code in bad[:5]))
+        st.markdown(
+            "コピー時に全角スペースやスマートクォート（“ ”）が紛れ込んだ可能性があります。"
+            "Secretsを開き、値を一度削除してから貼り直してください。"
+        )
+        st.stop()
+
 _missing = [k for k in ("SUPABASE_URL", "SUPABASE_SERVICE_KEY") if not _secret(k)]
 if _missing:
     st.title("⚙️ 設定が必要です")
