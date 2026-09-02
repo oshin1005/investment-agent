@@ -43,8 +43,16 @@ def _secret(key: str, default: str = "") -> str:
             val = None
     if val is None:
         return default
-    # 貼り付け時に紛れ込みやすい空白・改行・引用符（全角やスマートクォート含む）を落とす
     return str(val).strip().strip('"\'“”＂')
+
+
+def _clean_conn(val: str) -> str:
+    """
+    接続情報（URL / JWT）を厳密に正規化する。
+    どちらも本来は空白も非ASCIIも含まないので、混入したものは全て取り除く。
+    伏せ字(•)や全角スペース、改行が紛れてもここで落ちる。
+    """
+    return "".join(ch for ch in val if ch.isascii() and not ch.isspace())
 
 
 # ───────────────────────── 認証 ─────────────────────────
@@ -69,54 +77,62 @@ if not check_password():
     st.stop()
 
 
-# 接続情報が無いまま進むと supabase 側の例外になって原因が分かりにくいので、
-# ここで設定漏れを明示する
+SB_URL = _clean_conn(_secret("SUPABASE_URL"))
+SB_KEY = _clean_conn(_secret("SUPABASE_SERVICE_KEY"))
 
-# 接続情報に非ASCII文字（全角スペース・スマートクォート等）が混ざっていると
-# HTTPヘッダー生成時に UnicodeEncodeError になるため、先に検出して位置を示す
-for _k in ("SUPABASE_URL", "SUPABASE_SERVICE_KEY"):
-    _v = _secret(_k)
-    if _v and not _v.isascii():
-        bad = [(i, ch, hex(ord(ch))) for i, ch in enumerate(_v) if not ch.isascii()]
-        st.title("⚙️ 設定値に不正な文字があります")
-        st.error(f"`{_k}` に半角英数字以外の文字が {len(bad)}個 含まれています。")
-        st.write("該当箇所（先頭5件）:")
-        st.code("\n".join(f"{i}文字目: {repr(ch)} ({code})" for i, ch, code in bad[:5]))
-        st.markdown(
-            "コピー時に全角スペースやスマートクォート（“ ”）が紛れ込んだ可能性があります。"
-            "Secretsを開き、値を一度削除してから貼り直してください。"
-        )
-        st.stop()
 
-_missing = [k for k in ("SUPABASE_URL", "SUPABASE_SERVICE_KEY") if not _secret(k)]
-if _missing:
-    st.title("⚙️ 設定が必要です")
-    st.error(f"接続情報が設定されていません: {', '.join(_missing)}")
+def _conn_error(title: str, message: str, detail: str = "") -> None:
+    """接続設定の不備を、原因が分かる形で表示して停止する"""
+    st.title(title)
+    st.error(message)
+    if detail:
+        st.code(detail)
     st.markdown(
-        """
-**Streamlit Community Cloud の場合**
+        f"""
+**設定手順**
 
-右下の **Manage app** → 右上の **⋮** → **Settings** → **Secrets** に次の3行を貼り付けて Save してください。
+右下の **Manage app** → 右上の **⋮** → **Settings** → **Secrets** を開き、
+中身を**全て削除**してから次の3行を貼り直して Save してください。
 
 ```toml
 SUPABASE_URL = "https://xxxxx.supabase.co"
-SUPABASE_SERVICE_KEY = "eyJhbGci..."
+SUPABASE_SERVICE_KEY = "eyJhbGci....（219文字）"
 DASHBOARD_PASSWORD = "任意のパスワード"
 ```
 
-**ローカルの場合**
+Supabaseの画面からキーをコピーする場合は、必ず **Reveal**（目のアイコン）を押して
+実際の文字列を表示させてください。伏せ字（●）のままコピーすると失敗します。
 
-同じ内容を `.streamlit/secrets.toml` に置くか、`.env` に設定してください。
+**現在の値**
+
+- URL: `{SB_URL[:40] or '(未設定)'}...`（{len(SB_URL)}文字）
+- KEY: `{SB_KEY[:12] or '(未設定)'}...{SB_KEY[-6:] if len(SB_KEY) > 20 else ''}`（{len(SB_KEY)}文字 / 正しければ219文字前後）
         """
     )
     st.stop()
+
+
+if not SB_URL or not SB_KEY:
+    missing = [n for n, v in (("SUPABASE_URL", SB_URL), ("SUPABASE_SERVICE_KEY", SB_KEY)) if not v]
+    _conn_error("⚙️ 設定が必要です", f"接続情報が設定されていません: {', '.join(missing)}")
+
+# JWTは「ヘッダ.ペイロード.署名」の3部構成。伏せ字のままコピーするとここで弾かれる
+if SB_KEY.count(".") != 2 or len(SB_KEY) < 100:
+    _conn_error(
+        "⚙️ サービスキーが正しくありません",
+        f"キーの形式が不正です（{len(SB_KEY)}文字 / ドット区切り{SB_KEY.count('.') + 1}部）。",
+        f"先頭: {SB_KEY[:20]}\n末尾: {SB_KEY[-20:]}",
+    )
 
 
 # ───────────────────────── データ取得 ─────────────────────────
 @st.cache_resource
 def get_client():
     from supabase import create_client
-    return create_client(_secret("SUPABASE_URL"), _secret("SUPABASE_SERVICE_KEY"))
+    try:
+        return create_client(SB_URL, SB_KEY)
+    except Exception as e:
+        _conn_error("⚙️ Supabaseに接続できません", f"{type(e).__name__}: {str(e)[:200]}")
 
 
 @st.cache_data(ttl=300)
