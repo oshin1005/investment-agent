@@ -64,6 +64,32 @@ if not check_password():
     st.stop()
 
 
+# 接続情報が無いまま進むと supabase 側の例外になって原因が分かりにくいので、
+# ここで設定漏れを明示する
+_missing = [k for k in ("SUPABASE_URL", "SUPABASE_SERVICE_KEY") if not _secret(k)]
+if _missing:
+    st.title("⚙️ 設定が必要です")
+    st.error(f"接続情報が設定されていません: {', '.join(_missing)}")
+    st.markdown(
+        """
+**Streamlit Community Cloud の場合**
+
+右下の **Manage app** → 右上の **⋮** → **Settings** → **Secrets** に次の3行を貼り付けて Save してください。
+
+```toml
+SUPABASE_URL = "https://xxxxx.supabase.co"
+SUPABASE_SERVICE_KEY = "eyJhbGci..."
+DASHBOARD_PASSWORD = "任意のパスワード"
+```
+
+**ローカルの場合**
+
+同じ内容を `.streamlit/secrets.toml` に置くか、`.env` に設定してください。
+        """
+    )
+    st.stop()
+
+
 # ───────────────────────── データ取得 ─────────────────────────
 @st.cache_resource
 def get_client():
