@@ -1,0 +1,14 @@
+.env
+*.pyc
+__pycache__/
+*.db
+*.log
+.DS_Store
+venv/
+.venv/
+data/trading.db
+logs/
+data/backup/
+backtest_report.html
+matcha-business-spec.md
+.streamlit/secrets.toml
