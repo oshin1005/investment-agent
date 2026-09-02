@@ -9,7 +9,6 @@ import os
 from datetime import datetime, timedelta, date
 
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
@@ -22,6 +21,95 @@ st.set_page_config(
 )
 
 CAPITAL = 300_000  # 元金（円）
+
+# ───────────────────────── 配色 ─────────────────────────
+# 金融ダッシュボードとして、色は「損益」にだけ意味を持たせる。
+# それ以外はニュートラルにして数字を主役にする。
+C_UP     = "#22C55E"   # 利益
+C_DOWN   = "#EF4444"   # 損失
+C_FLAT   = "#64748B"   # 中立
+C_ACCENT = "#4C8DFF"   # 強調（推移グラフなど）
+C_BG     = "#0B0E14"
+C_CARD   = "#151A23"
+C_LINE   = "#232B39"
+C_TEXT   = "#E4E8EF"
+C_MUTED  = "#8A94A6"
+
+st.markdown(f"""
+<style>
+  /* Streamlit標準のヘッダー・フッターを消して画面を広く使う */
+  #MainMenu, footer, header {{ visibility: hidden; height: 0; }}
+  .block-container {{ padding: 1.6rem 2.2rem 3rem; max-width: 1500px; }}
+
+  html, body, [class*="css"] {{
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans",
+                 "Noto Sans JP", "Segoe UI", sans-serif;
+  }}
+
+  /* KPIをカードにする */
+  div[data-testid="stMetric"] {{
+    background: {C_CARD};
+    border: 1px solid {C_LINE};
+    border-radius: 12px;
+    padding: 16px 18px 14px;
+  }}
+  div[data-testid="stMetricLabel"] p {{
+    font-size: .78rem; color: {C_MUTED};
+    letter-spacing: .04em; font-weight: 500;
+  }}
+  div[data-testid="stMetricValue"] {{
+    font-size: 1.75rem; font-weight: 700;
+    font-variant-numeric: tabular-nums; letter-spacing: -.01em;
+  }}
+  div[data-testid="stMetricDelta"] {{ font-size: .78rem; }}
+
+  /* 見出し */
+  h1 {{ font-size: 1.55rem !important; font-weight: 700; letter-spacing: -.01em; }}
+  h2, h3 {{
+    font-size: 1.02rem !important; font-weight: 600;
+    color: {C_TEXT}; letter-spacing: .01em;
+    margin-top: .4rem !important; margin-bottom: .5rem !important;
+  }}
+
+  /* 表 */
+  div[data-testid="stDataFrame"] {{
+    border: 1px solid {C_LINE}; border-radius: 12px; overflow: hidden;
+  }}
+
+  /* シグナルのアコーディオン */
+  div[data-testid="stExpander"] {{
+    border: 1px solid {C_LINE} !important;
+    border-radius: 10px !important;
+    background: {C_CARD};
+    margin-bottom: 6px;
+  }}
+  div[data-testid="stExpander"] summary {{ font-size: .9rem; }}
+
+  /* 区切り線を控えめに */
+  hr {{ border-color: {C_LINE}; margin: 1.4rem 0 1.1rem; }}
+
+  /* Plotlyの余計なツールバーを隠す */
+  .modebar {{ display: none !important; }}
+</style>
+""", unsafe_allow_html=True)
+
+
+def plot(fig, height: int = 300):
+    """グラフの見た目を全体で統一して描画する"""
+    fig.update_layout(
+        height=height,
+        margin=dict(l=8, r=8, t=8, b=8),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color=C_MUTED, size=11),
+        hoverlabel=dict(bgcolor=C_CARD, bordercolor=C_LINE,
+                        font=dict(color=C_TEXT, size=12)),
+        showlegend=False,
+    )
+    fig.update_xaxes(gridcolor=C_LINE, zerolinecolor=C_LINE, linecolor=C_LINE)
+    fig.update_yaxes(gridcolor=C_LINE, zerolinecolor=C_LINE, linecolor=C_LINE)
+    st.plotly_chart(fig, use_container_width=True,
+                    config={"displayModeBar": False})
 
 
 def _secret(key: str, default: str = "") -> str:
@@ -169,29 +257,51 @@ closed = trades[trades["status"] == "CLOSED"].copy() if len(trades) else trades
 open_pos = positions[positions["status"] == "OPEN"].copy() if len(positions) else positions
 
 # ───────────────────────── ヘッダー ─────────────────────────
-c1, c2 = st.columns([3, 1])
-with c1:
-    st.title("📈 AI投資エージェント")
-with c2:
-    if st.button("🔄 更新", width="stretch"):
+h1, h2 = st.columns([5, 1])
+with h1:
+    st.markdown(
+        f"<div style='display:flex;align-items:baseline;gap:14px;margin-bottom:2px'>"
+        f"<span style='font-size:1.5rem;font-weight:700;letter-spacing:-.01em'>AI投資エージェント</span>"
+        f"<span style='color:{C_MUTED};font-size:.8rem'>ペーパートレード実績</span></div>",
+        unsafe_allow_html=True,
+    )
+with h2:
+    if st.button("更新", width="stretch"):
         st.cache_data.clear()
         st.rerun()
-    st.caption(f"更新: {datetime.now().strftime('%m/%d %H:%M')}")
+    st.markdown(
+        f"<div style='color:{C_MUTED};font-size:.72rem;text-align:center;margin-top:2px'>"
+        f"{datetime.now().strftime('%m/%d %H:%M')} 時点</div>",
+        unsafe_allow_html=True,
+    )
 
 # 今日の相場判定
 if len(market):
     latest = market.iloc[0]
     status = latest.get("status", "-")
-    icon = {"NORMAL": "✅", "CAUTION": "⚠️", "STOP": "🛑"}.get(status, "")
-    color = {"NORMAL": "green", "CAUTION": "orange", "STOP": "red"}.get(status, "gray")
+    accent = {"NORMAL": C_UP, "CAUTION": "#F59E0B", "STOP": C_DOWN}.get(status, C_FLAT)
+    label  = {"NORMAL": "通常", "CAUTION": "警戒", "STOP": "取引停止"}.get(status, status)
+
+    def _chip(name, v):
+        col = C_UP if v > 0 else C_DOWN if v < 0 else C_MUTED
+        return (f"<span style='color:{C_MUTED};font-size:.75rem'>{name}</span> "
+                f"<span style='color:{col};font-weight:600;font-size:.85rem;"
+                f"font-variant-numeric:tabular-nums'>{v:+.1f}%</span>")
+
     st.markdown(
-        f"<div style='padding:12px 18px;border-radius:10px;background:rgba(128,128,128,0.08);"
-        f"border-left:5px solid {color};margin-bottom:8px'>"
-        f"<b>{icon} 相場判定: {status}</b>　"
-        f"<span style='color:gray'>{pd.Timestamp(latest['date']).strftime('%m/%d')} ／ "
-        f"日経 本日 {latest.get('daily_change', 0):+.1f}%　3日 {latest.get('three_day_change', 0):+.1f}%　"
-        f"週間 {latest.get('weekly_change', 0):+.1f}%　ニュース {latest.get('news_risk', '-')}</span>"
-        f"<br><span style='font-size:0.85em;color:gray'>{latest.get('reason', '')}</span></div>",
+        f"<div style='background:{C_CARD};border:1px solid {C_LINE};border-left:3px solid {accent};"
+        f"border-radius:10px;padding:12px 16px;margin:14px 0 18px'>"
+        f"<div style='display:flex;align-items:center;gap:20px;flex-wrap:wrap'>"
+        f"<span style='color:{accent};font-weight:700;font-size:.92rem'>● {label}</span>"
+        f"<span style='color:{C_MUTED};font-size:.75rem'>"
+        f"{pd.Timestamp(latest['date']).strftime('%-m/%-d')} の日経</span>"
+        f"{_chip('本日', latest.get('daily_change', 0))}"
+        f"{_chip('3日', latest.get('three_day_change', 0))}"
+        f"{_chip('週間', latest.get('weekly_change', 0))}"
+        f"<span style='color:{C_MUTED};font-size:.75rem'>ニュースリスク "
+        f"<b style='color:{C_TEXT}'>{latest.get('news_risk', '-')}</b></span></div>"
+        f"<div style='color:{C_MUTED};font-size:.75rem;margin-top:6px'>"
+        f"{str(latest.get('reason', ''))[:110]}</div></div>",
         unsafe_allow_html=True,
     )
 
@@ -229,31 +339,36 @@ with g1:
     if len(closed):
         eq = closed.sort_values("closed_at").copy()
         eq["累計損益"] = eq["pnl"].cumsum()
-        eq["累計損益率"] = eq["pnl_pct"].cumsum()
         fig = go.Figure()
         fig.add_trace(go.Scatter(
-            x=eq["closed_at"], y=eq["累計損益"], mode="lines+markers",
-            line=dict(width=2.5, color="#2E86DE"),
-            fill="tozeroy", fillcolor="rgba(46,134,222,0.12)",
-            hovertemplate="%{x|%m/%d}<br>¥%{y:,.0f}<extra></extra>",
+            x=eq["closed_at"], y=eq["累計損益"],
+            mode="lines", line=dict(width=2, color=C_ACCENT, shape="hv"),
+            fill="tozeroy", fillcolor="rgba(76,141,255,0.10)",
+            hovertemplate="%{x|%-m/%-d}　<b>%{y:,.0f}円</b><extra></extra>",
         ))
-        fig.add_hline(y=0, line_dash="dot", line_color="gray", opacity=0.5)
-        fig.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10),
-                          yaxis_title="円", xaxis_title=None, showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
+        fig.add_hline(y=0, line_dash="dot", line_color=C_LINE)
+        fig.update_yaxes(ticksuffix=" 円")
+        plot(fig, 300)
 
 with g2:
     st.subheader("月別損益")
     if len(closed):
         m = closed.copy()
-        m["月"] = m["closed_at"].dt.strftime("%Y-%m")
-        mon = m.groupby("月")["pnl"].sum().reset_index()
-        mon["色"] = mon["pnl"].apply(lambda v: "#27AE60" if v >= 0 else "#E74C3C")
-        fig = go.Figure(go.Bar(x=mon["月"], y=mon["pnl"], marker_color=mon["色"],
-                               hovertemplate="%{x}<br>¥%{y:,.0f}<extra></extra>"))
-        fig.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10),
-                          yaxis_title="円", xaxis_title=None)
-        st.plotly_chart(fig, use_container_width=True)
+        m["月"] = m["closed_at"].dt.strftime("%-m月")
+        m["_k"] = m["closed_at"].dt.strftime("%Y%m")
+        mon = m.groupby(["_k", "月"])["pnl"].sum().reset_index().sort_values("_k")
+        fig = go.Figure(go.Bar(
+            x=mon["月"], y=mon["pnl"],
+            marker_color=[C_UP if v >= 0 else C_DOWN for v in mon["pnl"]],
+            marker_line_width=0,
+            hovertemplate="%{x}　<b>%{y:,.0f}円</b><extra></extra>",
+        ))
+        fig.add_hline(y=0, line_color=C_LINE)
+        fig.update_yaxes(ticksuffix=" 円")
+        # 文字列の月を日付として解釈されると棒が極細になるため、カテゴリ軸に固定する
+        fig.update_xaxes(type="category", showgrid=False)
+        fig.update_layout(bargap=0.45)
+        plot(fig, 300)
 
 # ───────────────────────── 保有中 ─────────────────────────
 st.subheader(f"保有中のポジション（{len(open_pos)}件）")
@@ -294,49 +409,58 @@ with b1:
             累計損益率=("pnl_pct", "sum"),
             実現損益=("pnl", "sum"),
         ).reset_index().sort_values("累計損益率", ascending=False)
-        by["label"] = by["name"] + "(" + by["ticker"] + ")"
-        by["色"] = by["累計損益率"].apply(lambda v: "#27AE60" if v >= 0 else "#E74C3C")
+        by["label"] = by["name"].str.slice(0, 9) + " " + by["ticker"]
         lo, hi = float(by["累計損益率"].min()), float(by["累計損益率"].max())
         span = max(hi - lo, 1.0)
-        label_x = max(hi, 0) + span * 0.06   # 数値ラベルは右端に揃えて置く（負の棒と軸ラベルの重なり防止）
+        label_x = max(hi, 0) + span * 0.05   # 数値は右端に揃える（負の棒と軸ラベルの重なり防止）
         fig = go.Figure()
         fig.add_trace(go.Bar(
-            x=by["累計損益率"], y=by["label"], orientation="h", marker_color=by["色"],
-            hovertemplate="%{y}<br>累計 %{x:+.1f}%<extra></extra>",
+            x=by["累計損益率"], y=by["label"], orientation="h",
+            marker_color=[C_UP if v >= 0 else C_DOWN for v in by["累計損益率"]],
+            marker_line_width=0, width=0.62,
+            hovertemplate="%{y}　<b>%{x:+.1f}%</b><extra></extra>",
         ))
         fig.add_trace(go.Scatter(
             x=[label_x] * len(by), y=by["label"], mode="text",
-            text=by.apply(lambda r: f"{r['累計損益率']:+.1f}%　勝率{r['勝率']:.0f}%・{r['取引数']}件", axis=1),
-            textposition="middle right", textfont=dict(size=11),
-            hoverinfo="skip", showlegend=False,
+            text=by.apply(
+                lambda r: f"<b>{r['累計損益率']:+.1f}%</b>　"
+                          f"<span style='color:{C_MUTED}'>勝率{r['勝率']:.0f}% / {r['取引数']}件</span>",
+                axis=1),
+            textposition="middle right", textfont=dict(size=11, color=C_TEXT),
+            hoverinfo="skip",
         ))
-        fig.update_layout(
-            height=max(280, 28 * len(by) + 60), margin=dict(l=10, r=10, t=10, b=10),
-            xaxis=dict(title="累計損益率 (%)", range=[min(lo, 0) - span * 0.15, label_x + span * 0.9],
-                       zeroline=True, zerolinecolor="gray"),
-            yaxis=dict(autorange="reversed"), showlegend=False,
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        fig.update_xaxes(range=[min(lo, 0) - span * 0.12, label_x + span * 0.85],
+                         showgrid=False, zeroline=True, ticksuffix="%")
+        fig.update_yaxes(autorange="reversed", showgrid=False)
+        plot(fig, max(300, 26 * len(by) + 50))
 
 with b2:
-    st.subheader("決済理由の内訳")
+    st.subheader("決済理由")
     if len(closed):
-        r = closed["exit_reason"].map({"target": "利確", "stop": "損切", "timeout": "期限切れ"}).value_counts()
+        r = closed["exit_reason"].map(
+            {"target": "利確", "stop": "損切", "timeout": "期限切れ"}).value_counts()
+        cmap = {"利確": C_UP, "損切": C_DOWN, "期限切れ": C_FLAT}
         fig = go.Figure(go.Pie(
-            labels=r.index, values=r.values, hole=0.5,
-            marker_colors=["#27AE60", "#E74C3C", "#95A5A6"][:len(r)],
-            textinfo="label+percent",
+            labels=r.index, values=r.values, hole=0.62, sort=False,
+            marker=dict(colors=[cmap.get(x, C_FLAT) for x in r.index],
+                        line=dict(color=C_BG, width=3)),
+            textinfo="label+percent", textfont=dict(size=11, color=C_TEXT),
+            hovertemplate="%{label}　<b>%{value}件</b><extra></extra>",
         ))
-        fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10), showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
+        fig.add_annotation(text=f"<b>{len(closed)}</b><br><span style='font-size:10px'>取引</span>",
+                           showarrow=False, font=dict(size=18, color=C_TEXT))
+        plot(fig, 240)
 
-        st.caption("損益率の分布")
-        fig2 = px.histogram(closed, x="pnl_pct", nbins=20,
-                            color_discrete_sequence=["#2E86DE"])
-        fig2.add_vline(x=0, line_dash="dot", line_color="gray")
-        fig2.update_layout(height=200, margin=dict(l=10, r=10, t=10, b=10),
-                           xaxis_title="損益率 (%)", yaxis_title="件数", showlegend=False)
-        st.plotly_chart(fig2, use_container_width=True)
+        st.markdown(f"<div style='color:{C_MUTED};font-size:.78rem;margin:2px 0 -6px'>"
+                    f"損益率の分布</div>", unsafe_allow_html=True)
+        fig2 = go.Figure(go.Histogram(
+            x=closed["pnl_pct"], nbinsx=18,
+            marker=dict(color=C_ACCENT, line=dict(color=C_BG, width=1)),
+            hovertemplate="%{x:.1f}%　<b>%{y}件</b><extra></extra>",
+        ))
+        fig2.add_vline(x=0, line_dash="dot", line_color=C_MUTED)
+        fig2.update_xaxes(ticksuffix="%", showgrid=False)
+        plot(fig2, 175)
 
 st.divider()
 
@@ -347,25 +471,56 @@ if len(signals):
     today_sig = signals[signals["created_at"].dt.date == latest_day].copy()
     # 同日・同銘柄は最新だけ
     today_sig = today_sig.sort_values("created_at").drop_duplicates("ticker", keep="last")
-    st.caption(f"{latest_day.strftime('%Y/%m/%d')} の分析結果 ／ {len(today_sig)}銘柄")
+    st.markdown(
+        f"<div style='color:{C_MUTED};font-size:.78rem;margin:-4px 0 8px'>"
+        f"{latest_day.strftime('%Y年%-m月%-d日')} の分析　{len(today_sig)}銘柄</div>",
+        unsafe_allow_html=True,
+    )
     order = {"STRONG_BUY": 0, "BUY": 1, "HOLD": 2, "SELL": 3, "STRONG_SELL": 4}
     today_sig["_o"] = today_sig["signal"].map(order).fillna(9)
     today_sig = today_sig.sort_values(["_o", "confidence"], ascending=[True, False])
+
+    SIG_STYLE = {
+        "STRONG_BUY":  ("強い買い", C_UP),
+        "BUY":         ("買い",     C_UP),
+        "HOLD":        ("様子見",   C_FLAT),
+        "SELL":        ("売り",     C_DOWN),
+        "STRONG_SELL": ("強い売り", C_DOWN),
+    }
     for _, s in today_sig.iterrows():
-        badge = {"STRONG_BUY": "🟢🟢", "BUY": "🟢", "HOLD": "⚪", "SELL": "🔴", "STRONG_SELL": "🔴🔴"}.get(s["signal"], "")
+        jp, col = SIG_STYLE.get(s["signal"], (s["signal"], C_FLAT))
+        tp = s.get("target_pct") or 0
+        sl = s.get("stop_loss_pct") or 0
         with st.expander(
-            f"{badge} **{s['signal']}**　{s['name']}({s['ticker']})　信頼度 {s['confidence']}　"
-            f"｜ ¥{s['entry_price']:,.0f} → 目標 ¥{s['target_price']:,.0f} ({s.get('target_pct') or 0:+.1f}%) "
-            f"／ 損切 ¥{s['stop_loss']:,.0f} ({s.get('stop_loss_pct') or 0:+.1f}%)"
+            f"{jp}　{s['name']}（{s['ticker']}）　"
+            f"信頼度 {s['confidence']}　│　"
+            f"{s['entry_price']:,.0f}円 → 目標 {s['target_price']:,.0f}円 ({tp:+.1f}%) "
+            f"／ 損切 {s['stop_loss']:,.0f}円 ({sl:+.1f}%)"
         ):
-            cc1, cc2, cc3 = st.columns(3)
-            cc1.metric("テクニカル", f"{s.get('tech_score') or 0:.0f}")
-            cc2.metric("ニュース", f"{s.get('news_score') or 0:.0f}")
-            cc3.metric("最終スコア", f"{s.get('final_score') or 0:.0f}")
+            def _bar(label, v):
+                v = float(v or 0)
+                return (f"<div style='margin-bottom:9px'>"
+                        f"<div style='display:flex;justify-content:space-between;font-size:.75rem;"
+                        f"color:{C_MUTED};margin-bottom:3px'><span>{label}</span>"
+                        f"<span style='color:{C_TEXT};font-weight:600'>{v:.0f}</span></div>"
+                        f"<div style='height:5px;background:{C_LINE};border-radius:3px'>"
+                        f"<div style='height:5px;width:{min(max(v,0),100)}%;background:{col};"
+                        f"border-radius:3px'></div></div></div>")
+            st.markdown(
+                _bar("テクニカル", s.get("tech_score"))
+                + _bar("ニュース", s.get("news_score"))
+                + _bar("最終スコア", s.get("final_score")),
+                unsafe_allow_html=True,
+            )
             rf = s.get("risk_flags")
             if rf and rf not in ("[]", ""):
-                st.warning(f"⚠️ {rf}")
-            st.write(s.get("reasoning", ""))
+                st.markdown(
+                    f"<div style='background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);"
+                    f"border-radius:8px;padding:8px 12px;font-size:.8rem;color:#FCA5A5;margin:4px 0 8px'>"
+                    f"リスク要因: {str(rf).strip('[]')}</div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div style='font-size:.85rem;line-height:1.75;color:{C_TEXT}'>"
+                f"{s.get('reasoning', '')}</div>", unsafe_allow_html=True)
 
 st.divider()
 
@@ -374,30 +529,49 @@ st.subheader("決済履歴")
 if len(closed):
     h = closed.sort_values("closed_at", ascending=False).head(50)
     show = pd.DataFrame({
-        "決済日": h["closed_at"].dt.strftime("%m/%d"),
-        "銘柄": h["name"] + "(" + h["ticker"] + ")",
-        "結果": h["exit_reason"].map({"target": "✅ 利確", "stop": "❌ 損切", "timeout": "⏱ 期限"}),
-        "取得": h["entry_price"].map("¥{:,.0f}".format),
-        "決済": h["exit_price"].map("¥{:,.0f}".format),
-        "損益率": h["pnl_pct"].map("{:+.2f}%".format),
-        "損益": h["pnl"].map("¥{:+,.0f}".format),
-        "保有": h["holding_days"].fillna(0).astype(int).astype(str) + "日",
+        "決済日": h["closed_at"].dt.strftime("%-m/%-d"),
+        "銘柄": h["name"] + " " + h["ticker"],
+        "結果": h["exit_reason"].map({"target": "利確", "stop": "損切", "timeout": "期限切れ"}),
+        "取得": h["entry_price"],
+        "決済": h["exit_price"],
+        "損益率": h["pnl_pct"],
+        "損益": h["pnl"],
+        "保有": h["holding_days"].fillna(0).astype(int),
     })
-    st.dataframe(show, hide_index=True, width="stretch", height=min(420, 38 * len(show) + 40))
+    st.dataframe(
+        show, hide_index=True, width="stretch",
+        height=min(430, 36 * len(show) + 40),
+        column_config={
+            "取得":   st.column_config.NumberColumn(format="%,d 円"),
+            "決済":   st.column_config.NumberColumn(format="%,d 円"),
+            "損益率": st.column_config.NumberColumn(format="%+.2f%%"),
+            "損益":   st.column_config.NumberColumn(format="%+,d 円"),
+            "保有":   st.column_config.NumberColumn(format="%d 日"),
+        },
+    )
 
 # ───────────────────────── 相場ログ ─────────────────────────
 with st.expander("相場判定の履歴"):
     if len(market):
         mm = market.sort_values("date", ascending=False).head(30)
         show = pd.DataFrame({
-            "日付": mm["date"].dt.strftime("%m/%d"),
-            "判定": mm["status"].map({"NORMAL": "✅ NORMAL", "CAUTION": "⚠️ CAUTION", "STOP": "🛑 STOP"}),
-            "日経 本日": mm["daily_change"].map("{:+.1f}%".format),
-            "3日": mm["three_day_change"].map("{:+.1f}%".format),
-            "週間": mm["weekly_change"].map("{:+.1f}%".format),
+            "日付": mm["date"].dt.strftime("%-m/%-d"),
+            "判定": mm["status"].map({"NORMAL": "通常", "CAUTION": "警戒", "STOP": "取引停止"}),
+            "本日": mm["daily_change"],
+            "3日": mm["three_day_change"],
+            "週間": mm["weekly_change"],
             "ニュース": mm["news_risk"],
-            "理由": mm["reason"].fillna("").str.slice(0, 60),
+            "理由": mm["reason"].fillna("").str.slice(0, 70),
         })
-        st.dataframe(show, hide_index=True, width="stretch")
+        st.dataframe(
+            show, hide_index=True, width="stretch",
+            column_config={c: st.column_config.NumberColumn(format="%+.1f%%")
+                           for c in ("本日", "3日", "週間")},
+        )
 
-st.caption("※ Yahoo Financeの実株価に基づく仮想売買（ペーパートレード）の記録です。実際の約定・スリッページ・手数料は含みません。")
+st.markdown(
+    f"<div style='color:{C_MUTED};font-size:.72rem;margin-top:20px;line-height:1.7'>"
+    f"Yahoo Financeの実株価に基づく仮想売買（ペーパートレード）の記録です。"
+    f"実際の約定・スリッページ・手数料は含みません。投資判断はご自身の責任で行ってください。</div>",
+    unsafe_allow_html=True,
+)
