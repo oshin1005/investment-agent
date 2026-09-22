@@ -21,8 +21,24 @@ from src.portfolio.models import Position, Trade, get_engine
 
 
 MAX_HOLD_DAYS   = 10        # 最大保有営業日数
-POSITION_BUDGET = 1_000_000 # 1ポジションあたりの想定投下額（円）
+POSITION_BUDGET = 1_000_000 # 旧方式（固定100万円）。backfill の過去復元でのみ使用
 LOT_SIZE        = 100       # 日本株の売買単位
+
+
+def calc_quantity(entry: float, stop: float) -> int:
+    """
+    リスク基準で株数を決める。
+      株数 = (元金 × 1トレードの許容損失%) ÷ (1株あたりの損切り幅)
+    を100株単位に切り捨て、1銘柄の建玉は元金の MAX_POSITION_VALUE_PCT% まで。
+    100株でも許容損失を超える銘柄は 0 を返す（＝見送り）。
+    """
+    if entry <= 0:
+        return 0
+    risk_yen  = config.CAPITAL_JPY * config.MAX_LOSS_PER_TRADE_PCT / 100
+    per_share = max(entry - stop, entry * 0.01)   # 損切り幅が異常に狭い場合の下限1%
+    by_risk   = int(risk_yen / per_share / LOT_SIZE) * LOT_SIZE
+    by_value  = int(config.CAPITAL_JPY * config.MAX_POSITION_VALUE_PCT / 100 / entry / LOT_SIZE) * LOT_SIZE
+    return min(by_risk, by_value)
 
 
 def _fetch(ticker: str, days: int = 40) -> "pd.DataFrame | None":
@@ -61,7 +77,12 @@ def open_positions_from_signals(signals: list) -> int:
                 print(f"  ・{sig.name}({sig.ticker}): 既に保有中のためスキップ")
                 continue
 
-            qty = max(int(POSITION_BUDGET / sig.entry_price / LOT_SIZE), 1) * LOT_SIZE
+            qty = calc_quantity(sig.entry_price, sig.stop_loss)
+            if qty <= 0:
+                loss100 = (sig.entry_price - sig.stop_loss) * LOT_SIZE
+                print(f"  ・{sig.name}({sig.ticker}): 100株でも損切り時{loss100:,.0f}円の損失で"
+                      f"許容額を超えるため見送り")
+                continue
             pos = Position(
                 ticker        = sig.ticker,
                 name          = sig.name,
