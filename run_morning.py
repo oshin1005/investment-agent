@@ -44,8 +44,8 @@ def notify_failure(err: Exception) -> None:
 try:
     from src.portfolio.models import init_db
     init_db()
-    from src.scheduler.runner import run_signal_cycle
-    run_signal_cycle(notify=True)
+    from src.scheduler.runner import run_focus_cycle
+    run_focus_cycle(notify=True)
 except Exception as e:
     print(f"\n[ERROR] 処理が失敗しました: {type(e).__name__}: {e}")
     notify_failure(e)

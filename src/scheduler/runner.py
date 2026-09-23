@@ -169,3 +169,82 @@ def run_signal_cycle(notify: bool = True) -> list:
     print(f"\n  完了: {datetime.now().strftime('%H:%M:%S')}")
     print(f"  Claude API使用: 2回 | 対象銘柄: {max_positions}銘柄上限\n")
     return signals
+
+
+# ══════════════════════════════════════════════════════════════
+#  集中2銘柄・押し目買い（2026-09-24〜 本番のロジック）
+#  上の run_signal_cycle（13銘柄から毎朝選ぶ方式）は実運用で勝てなかったため置き換えた。
+# ══════════════════════════════════════════════════════════════
+def run_focus_cycle(notify: bool = True) -> list:
+    from src.strategy import pullback, news_veto
+    from src.market_data.yahoo_fetcher import get_ohlcv_daily
+    from src.signal_engine.signal_generator import TradingSignal
+    from src.portfolio import paper_trader
+    from src.portfolio.models import Position, get_engine
+    from sqlalchemy.orm import Session
+
+    print(f"\n{'='*60}")
+    print(f"  AI投資エージェント（集中2銘柄・押し目買い）: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*60}")
+
+    init_db()
+    notifier = NotificationService()
+    tracker  = PortfolioTracker()
+
+    # ━━━ STEP 1: 相場環境（STOPなら新規の買いは出さない） ━━━
+    print("\n【STEP 1】相場環境チェック")
+    market = evaluate_market(drawdown_pct=0.0, headlines=get_market_rss_news())
+    tracker.log_market(market)
+    print(f"  → {market.status}  日経 本日{market.daily_change:+.1f}% 3日{market.three_day_change:+.1f}% "
+          f"週間{market.weekly_change:+.1f}%  / {market.reason}")
+
+    with Session(get_engine()) as s:
+        holding = {p.ticker for p in s.query(Position).filter(Position.status.in_(["ORDERED", "OPEN"]))}
+
+    # ━━━ STEP 2: 各銘柄の押し目判定 ━━━
+    print("\n【STEP 2】押し目判定")
+    signals = []
+    for code, name, sector in pullback.FOCUS_TICKERS:
+        c = pullback.signal_today(code, name, sector, get_ohlcv_daily(code, period="1y"))
+        if c is None:
+            print(f"  {name}: データ不足のため判定できず")
+            continue
+
+        action, reason, flags = "HOLD", c.reason, []
+        if c.entry:
+            if market.status == "STOP":
+                reason = f"押し目条件は満たしたが、相場判定がSTOPのため見送り（{market.reason}）。"
+            elif code in holding:
+                reason = "押し目条件は満たしたが、すでに保有中のため追加しない。"
+            else:
+                # ━━━ STEP 3: 悪材料チェック（Claude） ━━━
+                v = news_veto.check(code, name)
+                if v["veto"]:
+                    reason = f"押し目条件は満たしたが、悪材料のため見送り：{v['reason']}"
+                    flags = [v["reason"]]
+                else:
+                    action = "BUY"
+                    reason = f"{c.reason}（ニュース確認: {v['reason']}）"
+
+        print(f"  {name}({code}) {c.date} 終値{c.close:,.0f} RSI3={c.rsi3:.0f} "
+              f"{'上昇' if c.uptrend else '非上昇'}トレンド → {action}")
+        signals.append(TradingSignal(
+            ticker=code, name=name, sector=sector, signal=action,
+            confidence=int(round(100 - c.rsi3)),   # 売られ度合い（高いほど強い押し目）
+            entry_price=c.close, target_price=c.target, stop_loss=c.stop,
+            target_pct=(c.target / c.close - 1) * 100, stop_loss_pct=(c.stop / c.close - 1) * 100,
+            tech_score=round(c.rsi3, 1), news_score=None, final_score=None,
+            reasoning=reason, risk_flags=flags,
+        ))
+
+    tracker.save_signals(signals, market_status=market.status)
+
+    # ━━━ STEP 4: 通知・ペーパー発注 ━━━
+    buys = [s for s in signals if s.signal == "BUY"]
+    print(f"\n【STEP 3】買いシグナル {len(buys)}件")
+    if buys:
+        paper_trader.open_positions_from_signals(buys)
+        if notify:
+            notifier.send_signals(buys)
+    print(f"\n  完了: {datetime.now().strftime('%H:%M:%S')}\n")
+    return signals

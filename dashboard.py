@@ -331,6 +331,91 @@ else:
 
 st.divider()
 
+# ───────────────────────── 運用ルール（集中2銘柄・押し目買い） ─────────────────────────
+@st.cache_data(ttl=6 * 3600)
+def focus_backtest():
+    """集中銘柄の過去3年の検証結果と、直近の判定状態（毎朝の判定と同じコードで計算）"""
+    import yfinance as yf
+    from src.strategy import pullback as pb
+    out = []
+    for code, name, sector in pb.FOCUS_TICKERS:
+        df = yf.download(f"{code}.T", period="3y", interval="1d", progress=False, auto_adjust=True)
+        if df is None or df.empty:
+            continue
+        df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+        df = df.dropna(subset=["Close"])
+        out.append(dict(code=code, name=name, trades=pb.backtest(df),
+                        today=pb.signal_today(code, name, sector, df)))
+    return out
+
+
+st.subheader("運用ルール：集中2銘柄 × 押し目買い")
+st.markdown(
+    f"<div style='color:{C_MUTED};font-size:.8rem;line-height:1.8;margin:-4px 0 12px'>"
+    f"上昇トレンド中（終値が75日線より上、25日線が75日線より上）に、3日RSIが20未満まで売られたら翌朝買う。"
+    f"利確はATR×2、損切りはATR×1.5、最大10営業日。買う前にClaudeが悪材料の有無だけ確認する。"
+    f"</div>", unsafe_allow_html=True)
+
+try:
+    fb = focus_backtest()
+except Exception as e:
+    fb = []
+    st.caption(f"検証データを取得できませんでした（{type(e).__name__}）")
+
+if fb:
+    cols = st.columns(len(fb))
+    for col, r in zip(cols, fb):
+        t = [x["pnl_pct"] for x in r["trades"]]
+        wins = [x for x in t if x > 0]
+        loss = abs(sum(x for x in t if x <= 0))
+        pf = sum(wins) / loss if loss else float("inf")
+        c = r["today"]
+        if c is None:
+            state, scol = "データ不足", C_FLAT
+        elif c.entry:
+            state, scol = "押し目（買い候補）", C_UP
+        elif c.uptrend:
+            state, scol = "上昇トレンド・押し目待ち", C_ACCENT
+        else:
+            state, scol = "トレンド外・休み", C_FLAT
+        rsi_txt = f"3日RSI {c.rsi3:.0f}" if c else ""
+        close_txt = f"{c.close:,.0f}円（{c.date[5:].replace('-', '/')}）" if c else ""
+        with col:
+            st.markdown(
+                f"<div style='background:{C_CARD};border:1px solid {C_LINE};border-radius:12px;padding:14px 16px'>"
+                f"<div style='display:flex;justify-content:space-between;align-items:baseline'>"
+                f"<span style='font-weight:700'>{r['name']} <span style='color:{C_MUTED};font-weight:400'>{r['code']}</span></span>"
+                f"<span style='color:{C_MUTED};font-size:.75rem'>{close_txt}</span></div>"
+                f"<div style='margin:8px 0 10px;color:{scol};font-weight:600;font-size:.88rem'>● {state}"
+                f"<span style='color:{C_MUTED};font-weight:400;font-size:.78rem'>　{rsi_txt}</span></div>"
+                f"<div style='display:flex;gap:18px;font-size:.78rem;color:{C_MUTED}'>"
+                f"<span>過去3年 <b style='color:{C_TEXT}'>{len(t)}回</b></span>"
+                f"<span>勝率 <b style='color:{C_TEXT}'>{len(wins)/max(len(t),1)*100:.0f}%</b></span>"
+                f"<span>PF <b style='color:{C_TEXT}'>{pf:.2f}</b></span>"
+                f"<span>累計 <b style='color:{C_UP if sum(t) > 0 else C_DOWN}'>{sum(t):+.1f}%</b></span>"
+                f"</div></div>", unsafe_allow_html=True)
+
+    # 2銘柄合算の損益率推移（過去3年のバックテスト）
+    allt = sorted([dict(x, name=r["name"]) for r in fb for x in r["trades"]], key=lambda x: x["exit_date"])
+    if allt:
+        eqdf = pd.DataFrame(allt)
+        eqdf["累計"] = eqdf["pnl_pct"].cumsum()
+        fig = go.Figure(go.Scatter(
+            x=eqdf["exit_date"], y=eqdf["累計"], mode="lines",
+            line=dict(width=2, color=C_ACCENT, shape="hv"),
+            fill="tozeroy", fillcolor="rgba(76,141,255,0.10)",
+            customdata=eqdf[["name", "pnl_pct"]],
+            hovertemplate="%{x|%Y/%-m/%-d} %{customdata[0]} %{customdata[1]:+.1f}%<br>累計 <b>%{y:+.1f}%</b><extra></extra>",
+        ))
+        fig.add_hline(y=0, line_dash="dot", line_color=C_LINE)
+        fig.update_yaxes(ticksuffix="%")
+        st.markdown(f"<div style='color:{C_MUTED};font-size:.78rem;margin:14px 0 -4px'>"
+                    f"過去3年の検証（2銘柄合算・1回ごとの損益率を積み上げ、往復コスト0.1%控除）</div>",
+                    unsafe_allow_html=True)
+        plot(fig, 220)
+
+st.divider()
+
 # ───────────────────────── 推移グラフ ─────────────────────────
 g1, g2 = st.columns([2, 1])
 
@@ -491,9 +576,13 @@ if len(signals):
         jp, col = SIG_STYLE.get(s["signal"], (s["signal"], C_FLAT))
         tp = s.get("target_pct") or 0
         sl = s.get("stop_loss_pct") or 0
+        # 押し目買い方式（9/24〜）のシグナルはニューススコアを持たず、tech_score に3日RSIが入る
+        focus = pd.isna(s.get("news_score"))
+        score_label = (f"3日RSI {s['tech_score']:.0f}" if focus else f"信頼度 {s['confidence']}")
+        if focus and s["signal"] == "HOLD":
+            jp = "見送り"
         with st.expander(
-            f"{jp}　{s['name']}（{s['ticker']}）　"
-            f"信頼度 {s['confidence']}　│　"
+            f"{jp}　{s['name']}（{s['ticker']}）　{score_label}　│　"
             f"{s['entry_price']:,.0f}円 → 目標 {s['target_price']:,.0f}円 ({tp:+.1f}%) "
             f"／ 損切 {s['stop_loss']:,.0f}円 ({sl:+.1f}%)"
         ):
@@ -506,12 +595,16 @@ if len(signals):
                         f"<div style='height:5px;background:{C_LINE};border-radius:3px'>"
                         f"<div style='height:5px;width:{min(max(v,0),100)}%;background:{col};"
                         f"border-radius:3px'></div></div></div>")
-            st.markdown(
-                _bar("テクニカル", s.get("tech_score"))
-                + _bar("ニュース", s.get("news_score"))
-                + _bar("最終スコア", s.get("final_score")),
-                unsafe_allow_html=True,
-            )
+            if focus:
+                st.markdown(_bar("3日RSI（20未満で押し目と判定）", s.get("tech_score")),
+                            unsafe_allow_html=True)
+            else:
+                st.markdown(
+                    _bar("テクニカル", s.get("tech_score"))
+                    + _bar("ニュース", s.get("news_score"))
+                    + _bar("最終スコア", s.get("final_score")),
+                    unsafe_allow_html=True,
+                )
             rf = s.get("risk_flags")
             if rf and rf not in ("[]", ""):
                 st.markdown(

@@ -5,3 +5,5 @@ plotly>=5.20
 pandas>=2.0
 supabase>=2.0
 python-dotenv>=1.0
+yfinance>=0.2
+numpy
