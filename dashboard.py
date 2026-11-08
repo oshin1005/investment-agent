@@ -253,7 +253,11 @@ for df, cols in [
                 .dt.tz_convert("Asia/Tokyo").dt.tz_localize(None)
             )
 
-closed = trades[trades["status"] == "CLOSED"].copy() if len(trades) else trades
+# 実運用（2026-08-17〜）の取引だけを集計する。
+# saxo_order_id が PAPER_BACKFILL のものは、運用開始前に「もし当時売買していたら」と
+# 後から条件を合わせて再現した記録なので、実力の評価に混ぜない。
+closed = (trades[(trades["status"] == "CLOSED") & (trades["saxo_order_id"] == "PAPER")].copy()
+          if len(trades) else trades)
 open_pos = positions[positions["status"] == "OPEN"].copy() if len(positions) else positions
 
 # ───────────────────────── ヘッダー ─────────────────────────
@@ -262,7 +266,7 @@ with h1:
     st.markdown(
         f"<div style='display:flex;align-items:baseline;gap:14px;margin-bottom:2px'>"
         f"<span style='font-size:1.5rem;font-weight:700;letter-spacing:-.01em'>AI投資エージェント</span>"
-        f"<span style='color:{C_MUTED};font-size:.8rem'>ペーパートレード実績</span></div>",
+        f"<span style='color:{C_MUTED};font-size:.8rem'>ペーパートレード実績（実運用 2026/8/17〜）</span></div>",
         unsafe_allow_html=True,
     )
 with h2:
@@ -321,7 +325,7 @@ if len(closed):
 
     k1, k2, k3, k4, k5, k6 = st.columns(6)
     k1.metric("実現損益", f"{total_pnl/10000:+,.1f}万", f"{closed['pnl_pct'].sum():+.1f}%")
-    k2.metric("勝率", f"{wins/n*100:.1f}%", f"{wins}勝{n-wins}敗")
+    k2.metric("勝率", f"{wins/n*100:.1f}%", f"{wins}勝{n-wins}敗", delta_color="off")
     k3.metric("PF", f"{pf:.2f}" if pf != float("inf") else "∞")
     k4.metric("平均損益率", f"{closed['pnl_pct'].mean():+.2f}%")
     k5.metric("保有中", f"{len(open_pos)}件", f"含み {unreal/10000:+,.1f}万")
