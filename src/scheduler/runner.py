@@ -212,8 +212,11 @@ def run_focus_cycle(notify: bool = True) -> list:
 
         action, reason, flags = "HOLD", c.reason, []
         if c.entry:
-            if market.status == "STOP":
-                reason = f"押し目条件は満たしたが、相場判定がSTOPのため見送り（{market.reason}）。"
+            # 日経の下降トレンドや急落では止めない。押し目買いは市場全体が売られた時こそ機会で、
+            # 3年検証でも日経下降時の買いのほうが成績が良かった（コニカミノルタ: 勝率70%・PF2.70）。
+            # 止めるのは、過去データで検証しようがない戦争・金融危機級のニュースだけ。
+            if market.news_risk == "HIGH":
+                reason = f"押し目条件は満たしたが、重大ニュースのため見送り（{market.reason}）。"
             elif code in holding:
                 reason = "押し目条件は満たしたが、すでに保有中のため追加しない。"
             else:

@@ -47,15 +47,20 @@ def _launchd():
 def _last_run():
     if not os.path.exists("logs/morning.log"):
         return NG, "ログなし"
-    lines = [l for l in open("logs/morning.log", errors="replace")
-             if "AI投資エージェント:" in l]
-    if not lines:
+    import re
+    stamps = re.findall(r"AI投資エージェント[^:\n]*: (\d{4}-\d{2}-\d{2} \d{2}:\d{2})",
+                        open("logs/morning.log", errors="replace").read())
+    if not stamps:
         return NG, "実行記録なし"
-    last = lines[-1].split("AI投資エージェント:")[1].strip()[:16]
+    last = stamps[-1]
     d = datetime.strptime(last[:10], "%Y-%m-%d")
     days = (datetime.now().date() - d.date()).days
-    # 土日を挟むと最大3日空くのは正常
-    mark = OK if days <= 3 else WARN
+    # 土日祝を挟んだ空きは正常。直近の営業日に動いていたかで判定する
+    import jpbizday
+    prev_biz = datetime.now().date() - timedelta(days=1)
+    while not jpbizday.is_bizday(prev_biz):
+        prev_biz -= timedelta(days=1)
+    mark = OK if d.date() >= prev_biz else WARN
     return mark, f"最終 {last}（{days}日前）"
 
 
@@ -122,7 +127,7 @@ def _yahoo():
         return NG, "データ取得失敗"
     last = df.index[-1].date()
     days = (datetime.now().date() - last).days
-    close = float(df["Close"].iloc[-1])
+    close = float(df["Close"].iloc[-1].squeeze())
     return (OK if days <= 3 else WARN), f"日経 {close:,.0f}円（{last} 時点）"
 
 

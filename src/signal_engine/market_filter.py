@@ -28,7 +28,7 @@ class MarketCondition:
 
 
 def get_nikkei_data() -> pd.DataFrame:
-    df = yf.download(NIKKEI_TICKER, period="1mo", interval="1d",
+    df = yf.download(NIKKEI_TICKER, period="6mo", interval="1d",
                      progress=False, auto_adjust=True)
     df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
     return df.dropna()
