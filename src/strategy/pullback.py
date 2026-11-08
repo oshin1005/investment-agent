@@ -96,8 +96,15 @@ def signal_today(ticker: str, name: str, sector: str, df: pd.DataFrame) -> Optio
     )
 
 
-def backtest(df: pd.DataFrame) -> list:
-    """押し目買いの過去成績。返り値は取引ごとの dict のリスト"""
+def backtest(df: pd.DataFrame, entry_mode: str = "open") -> list:
+    """
+    押し目買いの過去成績。返り値は取引ごとの dict のリスト
+
+    entry_mode
+      "open"  : シグナル翌営業日の寄付きで成行買い（従来）
+      "limit" : シグナル日の終値で指値。翌営業日に安値がそこまで来たら約定、来なければ見送り。
+                寄付きが指値以下なら寄付きで約定する。
+    """
     df = add_indicators(df)
     trades, i, n = [], 80, len(df)
     while i < n - 1:
@@ -105,7 +112,19 @@ def backtest(df: pd.DataFrame) -> list:
         if not is_entry(row):
             i += 1
             continue
-        entry = float(df.iloc[i + 1]["Open"])
+        nxt = df.iloc[i + 1]
+        intraday_fill = False
+        if entry_mode == "limit":
+            limit = float(row["Close"])
+            if float(nxt["Open"]) <= limit:
+                entry = float(nxt["Open"])
+            elif float(nxt["Low"]) <= limit:
+                entry, intraday_fill = limit, True
+            else:
+                i += 1               # 一度も指値まで下がらなかった → 見送り
+                continue
+        else:
+            entry = float(nxt["Open"])
         atr = float(row["atr"])
         tgt, stp = entry + atr * TARGET_ATR, entry - atr * STOP_ATR
         exit_px, reason, j = None, "timeout", i + 1
@@ -114,7 +133,8 @@ def backtest(df: pd.DataFrame) -> list:
             if b["Low"] <= stp:          # 同日に両方触れたら損切り優先（保守的）
                 exit_px, reason = stp, "stop"
                 break
-            if b["High"] >= tgt:
+            # 場中に指値で約定した日は、高値が約定の前だった可能性があるので利確は数えない（保守的）
+            if b["High"] >= tgt and not (intraday_fill and j == i + 1):
                 exit_px, reason = tgt, "target"
                 break
         if exit_px is None:
